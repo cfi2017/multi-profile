@@ -1,5 +1,8 @@
 # multi-profile
 
+> [!CAUTION]
+> This project in its entirety is slopped. Do not use in production unless you understand the risks.
+
 Declarative, **isolated Zen/Firefox profiles** — one per customer / MS Teams
 tenant — built with Nix and used from a per-customer
 [direnv](https://direnv.net/).
