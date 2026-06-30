@@ -1,0 +1,3 @@
+/.direnv/
+# Local, per-direnv browser profiles (cookies, sessions, logins).
+/.browser-profiles/
