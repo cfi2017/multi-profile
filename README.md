@@ -27,9 +27,11 @@ your Teams login) in a directory next to the direnv. So:
   always reflects your config, including nested folders.
 - **Prefs** (container tabs, homepage, telemetry off, first-run/onboarding
   skipped, …) are baked into the browser's `mozilla.cfg`. A fresh profile opens
-  straight to your homepage — no Zen welcome screen or Firefox `about:welcome`,
-  no post-update page, no "make me default" nag (`zen.welcome-screen.seen`,
-  `browser.aboutwelcome.enabled`, and the `Override*Page` policies).
+  straight to your homepage — no Firefox `about:welcome`, no post-update page,
+  no "make me default" nag. Zen's own welcome screen ("a calmer internet") is
+  special: it ships `zen.welcome-screen.seen=false` as an app default that a
+  `mozilla.cfg` pref doesn't reliably override, so the launcher seeds it on the
+  user branch via a managed `user.js` (the mechanism Zen's own tests use).
 - All of the above are applied by `wrapFirefox`, which works on both
   `firefox-unwrapped` and Zen's `*-unwrapped` packages.
 - The **launcher** runs `… --no-remote --profile $PWD/.browser-profiles/<name>`.

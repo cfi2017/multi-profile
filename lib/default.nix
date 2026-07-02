@@ -237,8 +237,11 @@ rec {
         "browser.shell.checkDefaultBrowser" = false;
         "datareporting.policy.dataSubmissionEnabled" = false;
         "extensions.autoDisableScopes" = 0;
-        # skip the first-run / onboarding flow on a fresh profile
-        "zen.welcome-screen.seen" = true; # Zen's setup screen (no-op on Firefox)
+        # skip the first-run / onboarding flow on a fresh profile.
+        # NB: Zen ships `pref("zen.welcome-screen.seen", false)` as an app
+        # default, and a mozilla.cfg defaultPref does not reliably override it,
+        # so the welcome screen ("a calmer internet") is instead suppressed by
+        # seeding a user-branch pref via user.js — see `seedUserJs` below.
         "browser.aboutwelcome.enabled" = false; # Firefox about:welcome
         "browser.startup.homepage_override.mstone" = "ignore"; # no first-run/whatsnew page
         "startup.homepage_welcome_url" = "";
@@ -273,7 +276,12 @@ rec {
             "3rdparty".Extensions.${foxyproxyId} = mkFoxyProxy foxyproxy;
           })
           policies;
-        extraPrefs = settingsToPrefs (basePrefs // settings) + "\n" + prefs;
+        # Belt-and-suspenders lock (the authoritative fix is the user.js seed in
+        # the launcher; this only helps where autoconfig is honored).
+        extraPrefs =
+          settingsToPrefs (basePrefs // settings)
+          + "\n" + ''lockPref("zen.welcome-screen.seen", true);''
+          + "\n" + prefs;
       };
 
       # How to resolve the runtime profile directory at launch.
@@ -371,6 +379,19 @@ rec {
         fi
       '';
 
+      # Force Zen's first-run welcome ("a calmer internet") to be treated as
+      # already seen. A defaultPref/lockPref in mozilla.cfg is read back as
+      # false by Zen's startup check, so we pin it on the *user* branch via
+      # user.js — the same mechanism Zen's own test profiles use. Rewritten each
+      # launch (user.js is ours on a managed profile), applied at pref init
+      # before any chrome runs.
+      seedUserJs = lib.optionalString isZen ''
+        {
+          echo "// Managed by multi-profile — regenerated on each launch, do not edit."
+          echo 'user_pref("zen.welcome-screen.seen", true);'
+        } > "$dir/user.js"
+      '';
+
       launcher = pkgs.writeShellApplication {
         name = "browser-${name}";
         runtimeInputs = lib.optionals pinsEnabled [ pkgs.jq pkgs.mozlz4a ];
@@ -378,6 +399,7 @@ rec {
           ${resolveHome}
           dir="$profile_home/${profileDirName}"
           mkdir -p "$dir"
+          ${seedUserJs}
           ${applyPins}
           # --no-remote + a dedicated profile lets every customer browser run
           # concurrently, fully isolated from each other and your personal one.
