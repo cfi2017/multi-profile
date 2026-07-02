@@ -16,6 +16,52 @@ let
     "sponsorblock"
   ];
 
+  # Deterministic UUID (v4 shape) from a seed string, so a pin's identity is
+  # stable across rebuilds (Zen keys tabs by `zenSyncId`; a changing id would
+  # duplicate the pin on every launch).
+  mkUuid = seed:
+    let
+      h = builtins.hashString "sha256" seed;
+      s = i: len: builtins.substring i len h;
+    in
+    "${s 0 8}-${s 8 4}-4${s 13 3}-8${s 17 3}-${s 20 12}";
+
+  # Browser spec strings that resolve to a Zen build (essentials/pins are a
+  # Zen-only concept, stored in zen-sessions.jsonlz4).
+  zenBrowsers = [ "zen" "zen-beta" "zen-twilight" ];
+
+  # One declared pin -> a Zen sessions `.tabs` entry. `p` carries an injected
+  # `_id` (uuid) and `_index` (order). Shapes mirror the zen-browser-flake so
+  # Zen accepts the merged file. An "essential" is a pin with zenEssential.
+  mkPinTab = p: {
+    pinned = true;
+    hidden = false;
+    zenWorkspace = if (p.workspace or null) == null then null else "{${p.workspace}}";
+    zenSyncId = "{${p._id}}";
+    zenEssential = p.essential or false;
+    zenDefaultUserContextId = "true";
+    zenPinnedIcon = null;
+    zenIsEmpty = false;
+    zenHasStaticIcon = false;
+    zenGlanceId = null;
+    zenIsGlance = false;
+    searchMode = null;
+    userContextId = if (p.container or null) == null then 0 else p.container;
+    attributes = { };
+    index = p._index;
+    lastAccessed = 0;
+    groupId = null;
+    # a custom title (differs from the url) shows as the pinned tab's label
+    zenStaticLabel = if (p ? title && p.title != p.url) then p.title else null;
+    entries = [{
+      url = p.url;
+      title = p.title or p.url;
+      charset = "UTF-8";
+      ID = 0;
+      persist = true;
+    }];
+  };
+
   # Resolve a `browser` spec into an *unwrapped* firefox-family derivation
   # (something `wrapFirefox` can wrap).
   resolveUnwrapped = { pkgs, zen, browser }:
@@ -137,6 +183,16 @@ rec {
     , search ? null
       # FoxyProxy config as code (see mkFoxyProxy)
     , foxyproxy ? null
+      # Zen only: essentials + pinned tabs as code. Ordered list of
+      #   { url; title ? url; essential ? false; container ? null;
+      #     workspace ? null; id ? <derived>; }
+      # `essential = true` -> a Zen "Essential" (shown across workspaces);
+      # otherwise a pinned tab. Applied to zen-sessions.jsonlz4 at launch.
+    , pins ? [ ]
+      # When true, undeclared pinned/essential tabs are demoted (default) or
+      # removed on launch, so the declared pins are the source of truth.
+    , pinsForce ? false
+    , pinsForceAction ? "demote" # "demote" | "remove"
       # extra raw policies, recursively merged over the defaults
     , policies ? { }
       # extra raw mozilla.cfg lines
@@ -226,21 +282,95 @@ rec {
           profile_home="''${MULTI_PROFILE_HOME:-${profileHome}}"
         '';
 
+      # ---- essentials + pinned tabs (Zen only) ----------------------------
+      isZen = lib.isString browser && lib.elem browser zenBrowsers;
+      pinsEnabled = pins != [ ] && isZen;
+
+      # inject a stable id + order into each declared pin
+      indexedPins = lib.imap0
+        (i: p: p // {
+          _index = i;
+          _id = p.id or (mkUuid "${toString p.url}|${p.title or p.url}|${lib.boolToString (p.essential or false)}|${toString (p.workspace or "")}");
+        })
+        pins;
+
+      pinsJsonFile = pkgs.writeText "zen-declared-pins-${name}.json"
+        (builtins.toJSON (map mkPinTab indexedPins));
+
+      # jq merge: update declared pins in place, append new ones, optionally
+      # reconcile undeclared pins, then order by index. Operates on the `.tabs`
+      # array of a decompressed zen-sessions.jsonlz4.
+      pinsForceSnippet =
+        if pinsForce && pinsForceAction == "remove" then ''
+          | .tabs = [ .tabs[]
+              | if (.pinned == true or .zenEssential == true)
+                then select(.zenSyncId as $id | $dpIds | index($id) != null)
+                else . end ]''
+        else if pinsForce then ''
+          | .tabs = [ .tabs[]
+              | if ((.pinned == true or .zenEssential == true) and (.zenSyncId as $id | $dpIds | index($id) | not))
+                then (. * { pinned: false, zenEssential: false, groupId: null })
+                else . end ]''
+        else "";
+
+      pinsFilterFile = pkgs.writeText "zen-pins-merge-${name}.jq" ''
+        ($declaredPins[0]) as $pins
+        | .tabs = (.tabs // [])
+        | ([.tabs[].zenSyncId]) as $etIds
+        | ([$pins[].zenSyncId]) as $dpIds
+        | .tabs = [ .tabs[]
+            | . as $e
+            | ($pins | map(select(.zenSyncId == $e.zenSyncId)) | .[0] // null) as $o
+            | if $o != null
+              then $e * { pinned: $o.pinned, zenEssential: $o.zenEssential, zenWorkspace: $o.zenWorkspace, userContextId: $o.userContextId, index: $o.index, entries: $o.entries, groupId: $o.groupId, zenStaticLabel: $o.zenStaticLabel }
+              else . end ]
+        | .tabs += [ $pins[] | select(.zenSyncId as $id | $etIds | index($id) | not) ]
+        ${pinsForceSnippet}
+        | .tabs = (.tabs | sort_by(.index // 0))
+      '';
+
+      # Runs before exec (Zen closed for this profile). Zen writes the sessions
+      # file on first run, so pins land from the *second* launch onward; the
+      # merge is idempotent and preserves the rest of the session. Never blocks
+      # the browser from starting.
+      applyPins = lib.optionalString pinsEnabled ''
+        sessions="$dir/zen-sessions.jsonlz4"
+        # skip while this profile is live (file is locked in memory)
+        if [ -f "$sessions" ] && [ ! -e "$dir/.parentlock" ] && [ ! -e "$dir/lock" ]; then
+          _in="$(mktemp)"; _out="$(mktemp)"
+          cp -f "$sessions" "$sessions.bak" || true
+          if mozlz4a -d "$sessions" "$_in" \
+            && jq --slurpfile declaredPins ${pinsJsonFile} -f ${pinsFilterFile} "$_in" > "$_out" \
+            && [ -s "$_out" ] \
+            && mozlz4a "$_out" "$sessions"; then
+            rm -f "$sessions.bak"
+          else
+            echo "multi-profile: failed to apply pins, restoring session" >&2
+            [ -f "$sessions.bak" ] && mv -f "$sessions.bak" "$sessions"
+          fi
+          rm -f "$_in" "$_out"
+        fi
+      '';
+
       launcher = pkgs.writeShellApplication {
         name = "browser-${name}";
+        runtimeInputs = lib.optionals pinsEnabled [ pkgs.jq pkgs.mozlz4a ];
         text = ''
           ${resolveHome}
           dir="$profile_home/${profileDirName}"
           mkdir -p "$dir"
+          ${applyPins}
           # --no-remote + a dedicated profile lets every customer browser run
           # concurrently, fully isolated from each other and your personal one.
           exec ${lib.getExe wrapped} --no-remote --profile "$dir" "$@"
         '';
       };
     in
-    {
-      inherit name launcher;
-      browser = wrapped;
-      package = launcher;
-    };
+    lib.warnIf (pins != [ ] && !isZen)
+      "multi-profile: profile '${name}' sets `pins` but browser is not Zen; essentials/pinned tabs are Zen-only and will be ignored."
+      {
+        inherit name launcher;
+        browser = wrapped;
+        package = launcher;
+      };
 }

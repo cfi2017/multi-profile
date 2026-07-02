@@ -53,11 +53,12 @@ let
     '';
   };
 
-  # one .desktop per profile, plus the router entry
+  # one .desktop per profile, plus the router entry. `desktopName` /
+  # `desktopGenericName` (per-profile keys) override the shown names.
   profileDesktopEntries = lib.mapAttrs
     (name: b: {
-      name = "Browser — ${name}";
-      genericName = "Web Browser (${name})";
+      name = cfg.profiles.${name}.desktopName or "Browser — ${name}";
+      genericName = cfg.profiles.${name}.desktopGenericName or "Web Browser (${name})";
       exec = "${lib.getExe b.launcher} %U";
       icon = cfg.profiles.${name}.icon or "applications-internet";
       terminal = false;
@@ -99,8 +100,9 @@ in
       description = ''
         Customer profiles, keyed by name. Each value is a profile definition
         (same schema as `multi-profile.lib.mkProfile`: browser, extensions,
-        bookmarks, search, foxyproxy, settings, ...). An extra `icon` key (name
-        or path) sets the desktop-entry icon.
+        bookmarks, search, foxyproxy, settings, ...). Extra desktop-entry keys:
+        `icon` (name or path), `desktopName` (the shown app name, default
+        "Browser — <name>") and `desktopGenericName`.
       '';
     };
 

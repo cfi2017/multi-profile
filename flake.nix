@@ -92,8 +92,17 @@
                 (_: b: pkgs.mkShell { packages = [ b.launcher (webBin b) ]; })
                 built
               // {
+                # The default shell carries every `browser-*` launcher. When a
+                # flake defines exactly ONE profile (the per-direnv variant:
+                # your project's own flake composes this engine), the short
+                # `${command}` alias is unambiguous, so add it too — that lets
+                # a project `.envrc` use a bare `use flake` and get `${command}`.
                 default = pkgs.mkShell {
-                  packages = map (b: b.launcher) (pkgs.lib.attrValues built);
+                  packages =
+                    map (b: b.launcher) (pkgs.lib.attrValues built)
+                    ++ pkgs.lib.optional
+                      (pkgs.lib.length (pkgs.lib.attrValues built) == 1)
+                      (webBin (pkgs.lib.head (pkgs.lib.attrValues built)));
                 };
               };
           });
@@ -111,12 +120,27 @@
         description = "Public main flake composing a private work flake into per-customer browser profiles";
       };
       templates.main = self.templates.default;
+
+      templates.direnv = {
+        path = ./templates/direnv;
+        description = "Per-project flake: composes this engine into a single per-direnv browser (bare `use flake`)";
+      };
     }
     # ---- a runnable demo so this repo works standalone ---------------------
     // flake-utils.lib.eachSystem defaultSystems (system:
     let
       demo = self.lib.mkFlake {
         systems = [ system ];
+        # a Zen demo showing essentials + pinned tabs as code
+        profiles.zen-demo = {
+          browser = "zen";
+          pins = [
+            { url = "https://teams.microsoft.com"; title = "Teams"; essential = true; }
+            { url = "https://outlook.office.com"; title = "Outlook"; essential = true; }
+            { url = "https://github.com"; title = "GitHub"; }
+          ];
+          pinsForce = true; # declared pins are the source of truth
+        };
         profiles.demo = {
           browser = "firefox"; # firefox-unwrapped is cached; fast to build
           bookmarks = [

@@ -116,6 +116,29 @@ local to this directory.
 
 > Rename the short command with `mkFlake { command = "..."; … }` (default `web`).
 
+## Alternative: a self-contained per-project flake
+
+If you don't want a central flake — you'd rather each project own its browser
+and never reference the engine from its `.envrc` — use the `direnv` template:
+
+```sh
+cd my-project
+nix flake init -t github:YOU/multi-profile#direnv
+```
+
+You get [`templates/direnv`](templates/direnv): a `flake.nix` that imports the
+engine and defines a **single** profile for this project, plus an `.envrc` that
+is just:
+
+```sh
+use flake
+```
+
+Because the flake defines one profile, the default devShell carries the short
+`web` command, so a **bare `use flake`** is enough — the engine is referenced
+only in this project's `flake.nix` inputs, never in the direnv. Then run `web`.
+State still lives in `./.direnv/browser-profiles/<name>/`.
+
 > Override the profile location with `MULTI_PROFILE_HOME=/some/path`.
 
 ## Profile options
@@ -131,12 +154,17 @@ Each profile value accepts:
 | `bookmarksFolderName`| profile name       | title of the managed bookmarks folder                              |
 | `search`             | `null`             | declarative search engines (see below)                              |
 | `foxyproxy`          | `null`             | FoxyProxy config as code (see below)                                |
+| `pins`               | `[]`               | **Zen only** — essentials + pinned tabs as code (see below)         |
+| `pinsForce`          | `false`            | make declared `pins` the source of truth (demote/remove others)     |
+| `pinsForceAction`    | `"demote"`         | `"demote"` or `"remove"` undeclared pins when `pinsForce`           |
 | `settings`           | `{}`               | extra `about:config` prefs (json values)                           |
 | `policies`           | `{}`               | extra raw enterprise policies (recursively merged)                  |
 | `prefs`              | `""`               | extra raw `mozilla.cfg` lines                                       |
 | `profileDirName`     | profile name       | name of the local profile directory                                |
 | `profileHome`        | `null`             | where the profile dir lives; `null` = direnv-local (`$PWD`)         |
-| `icon`               | —                  | desktop-entry icon (used by the home-manager module)               |
+| `icon`               | —                  | desktop-entry icon (home-manager module)                            |
+| `desktopName`        | `Browser — <name>` | desktop-entry app name (home-manager module)                        |
+| `desktopGenericName` | `Web Browser (<name>)` | desktop-entry generic name (home-manager module)                |
 
 ### Declarative search engines
 
@@ -176,6 +204,40 @@ foxyproxy = {
 };
 ```
 
+### Essentials & pinned tabs as code (Zen)
+
+Zen's **Essentials** (the icon grid, shown across workspaces) and **pinned
+tabs** are, under the hood, entries in `zen-sessions.jsonlz4`. Declare them per
+profile with `pins` — an `essential = true` entry becomes an Essential, anything
+else a pinned tab:
+
+```nix
+pins = [
+  { url = "https://teams.microsoft.com"; title = "Teams";   essential = true; }
+  { url = "https://outlook.office.com";   title = "Outlook"; essential = true; }
+  { url = "https://github.com/YOU/proj";  title = "Repo"; }       # pinned tab
+  # optional per entry: container (userContextId), workspace (space UUID), id
+];
+pinsForce = true;          # declared pins are the source of truth
+# pinsForceAction = "demote";  # "demote" (default) or "remove" undeclared pins
+```
+
+How it works and its limits:
+
+- The launcher applies these to the profile's `zen-sessions.jsonlz4` **before
+  starting Zen** (decompress → `jq` merge → recompress), so it works the same in
+  a direnv or via a desktop entry. The merge only touches pinned/essential tabs
+  and leaves the rest of your session intact.
+- Zen writes that sessions file on first run, so pins appear from the **second
+  launch onward**. Changing `pins` is picked up on the next launch — no rebuild
+  needed.
+- The merge is skipped while that profile's browser is already open (the file is
+  locked); just relaunch. If anything goes wrong the previous session is
+  restored and the browser still starts.
+- **Zen only.** Firefox has no Essentials, and its pinned tabs use a different
+  session schema; setting `pins` on a non-Zen profile logs a warning and is
+  ignored. Tab *favicons* for pins are set in Zen for now (not declarative).
+
 ## System integration (home-manager): app entries + URL routing
 
 The `homeModules.default` module installs each customer browser as a desktop
@@ -193,7 +255,12 @@ to the right customer profile.
 
     # Same data as mkFlake — merge your private work flake with public profiles.
     profiles = inputs.work.browserProfiles // {
-      personal.browser = "zen";
+      personal = {
+        browser = "zen";
+        desktopName = "Personal";        # custom app name in the launcher/menu
+        # desktopGenericName = "Web Browser";
+        # icon = "zen-beta";             # icon name or path
+      };
     };
 
     defaultProfile = "personal";          # router fallback
@@ -242,7 +309,8 @@ The system-mode launcher always uses `profileHome` (overridable only by
 - `mkFlake { profiles; systems? config? overlays? nixpkgs? }` → `{ packages, apps, devShells }`.
   - `packages.<system>.<name>` / `apps.<system>.<name>` — the launchers.
   - `devShells.<system>.<name>` — shell with that launcher (for `use flake .#name`).
-  - `devShells.<system>.default` — shell with every launcher.
+  - `devShells.<system>.default` — shell with every launcher (plus the short
+    `command`/`web` alias when the flake defines a single profile).
 - `mkProfile { pkgs; zen; addons; } name profileDef` — lower-level builder
   returning `{ browser; launcher; }`.
 - `defaultExtensions` — the default extension name list.

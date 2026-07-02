@@ -24,6 +24,13 @@
           }
         ];
         settings."browser.startup.homepage" = "https://teams.microsoft.com";
+        # Essentials (shown across workspaces) + a pinned tab, as code.
+        pins = [
+          { url = "https://teams.microsoft.com"; title = "Teams"; essential = true; }
+          { url = "https://outlook.office.com"; title = "Outlook"; essential = true; }
+          { url = "https://portal.azure.com"; title = "Azure"; }
+        ];
+        pinsForce = true; # declared pins are the source of truth
         search = {
           default = "DuckDuckGo";
           add = [{
@@ -40,6 +47,7 @@
           port = 8080;
         }];
         icon = "zen-beta"; # desktop-entry icon (home-manager)
+        desktopName = "ACME"; # desktop-entry app name (home-manager)
       };
 
       globex = {
