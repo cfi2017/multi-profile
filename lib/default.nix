@@ -98,10 +98,17 @@ let
         else throw "multi-profile: bookmark '${n.name}' in ${ctx} needs either `url` (a bookmark) or `children` (a folder)")
       nodes;
 
-  # attrset of about:config prefs -> mozilla.cfg lines
+  # attrset of about:config prefs -> mozilla.cfg lines (Firefox)
   settingsToPrefs = s:
     lib.concatStringsSep "\n"
       (lib.mapAttrsToList (k: v: ''defaultPref("${k}", ${builtins.toJSON v});'') s);
+
+  # attrset of about:config prefs -> user.js lines (Zen). Zen ignores the
+  # wrapFirefox mozilla.cfg entirely (it reads config from the unwrapped
+  # package's own dir), so prefs must be delivered via the profile's user.js.
+  prefsToUserJs = s:
+    lib.concatStringsSep "\n"
+      (lib.mapAttrsToList (k: v: ''user_pref("${k}", ${builtins.toJSON v});'') s);
 
   foxyproxyId = "foxyproxy@eric.h.jung";
 
@@ -211,7 +218,8 @@ rec {
     , ...
     }:
     let
-      unwrapped = resolveUnwrapped { inherit pkgs zen browser; };
+      unwrappedBase = resolveUnwrapped { inherit pkgs zen browser; };
+      isZen = lib.isString browser && lib.elem browser zenBrowsers;
 
       resolvedExts =
         (map
@@ -237,11 +245,8 @@ rec {
         "browser.shell.checkDefaultBrowser" = false;
         "datareporting.policy.dataSubmissionEnabled" = false;
         "extensions.autoDisableScopes" = 0;
-        # skip the first-run / onboarding flow on a fresh profile.
-        # NB: Zen ships `pref("zen.welcome-screen.seen", false)` as an app
-        # default, and a mozilla.cfg defaultPref does not reliably override it,
-        # so the welcome screen ("a calmer internet") is instead suppressed by
-        # seeding a user-branch pref via user.js — see `seedUserJs` below.
+        # skip the first-run / onboarding flow on a fresh profile
+        "zen.welcome-screen.seen" = true; # Zen's setup screen ("a calmer internet")
         "browser.aboutwelcome.enabled" = false; # Firefox about:welcome
         "browser.startup.homepage_override.mstone" = "ignore"; # no first-run/whatsnew page
         "startup.homepage_welcome_url" = "";
@@ -251,37 +256,50 @@ rec {
         "toolkit.telemetry.reportingpolicy.firstRun" = false;
       };
 
+      allPolicies = lib.recursiveUpdate
+        ({
+          DisableAppUpdate = true;
+          DisableTelemetry = true;
+          # skip first-run onboarding: no welcome page, no post-update page,
+          # no "make me default" nag.
+          OverrideFirstRunPage = "";
+          OverridePostUpdatePage = "";
+          DontCheckDefaultBrowser = true;
+          ExtensionSettings = extensionSettings;
+        }
+        // lib.optionalAttrs (managedBookmarks != [ ]) {
+          ManagedBookmarks = managedBookmarks;
+        }
+        // lib.optionalAttrs (search != null) {
+          SearchEngines = mkSearchPolicy search;
+        }
+        // lib.optionalAttrs (foxyproxy != null) {
+          "3rdparty".Extensions.${foxyproxyId} = mkFoxyProxy foxyproxy;
+        })
+        policies;
+
+      allPrefs = basePrefs // settings;
+
+      # Zen and Firefox need config delivered differently.
+      #
+      # Firefox: wrapFirefox's policies.json + mozilla.cfg are read normally.
+      #
+      # Zen: the zen-browser-flake package ships its OWN distribution/ and the
+      # browser reads config relative to that (the unwrapped binary), so
+      # wrapFirefox's policies.json and mozilla.cfg are IGNORED. Instead bake
+      # policies into the unwrapped package via its `policies` arg, and deliver
+      # prefs through the profile's user.js (see seedUserJs).
+      unwrapped =
+        if isZen
+        then unwrappedBase.override { policies = allPolicies; }
+        else unwrappedBase;
+
       wrapped = pkgs.wrapFirefox unwrapped {
         # distinct window class per profile (handy for tiling WMs / identifying
         # which customer a window belongs to)
         wmClass = "browser-${name}";
-        extraPolicies = lib.recursiveUpdate
-          ({
-            DisableAppUpdate = true;
-            DisableTelemetry = true;
-            # skip first-run onboarding: no welcome page, no post-update page,
-            # no "make me default" nag.
-            OverrideFirstRunPage = "";
-            OverridePostUpdatePage = "";
-            DontCheckDefaultBrowser = true;
-            ExtensionSettings = extensionSettings;
-          }
-          // lib.optionalAttrs (managedBookmarks != [ ]) {
-            ManagedBookmarks = managedBookmarks;
-          }
-          // lib.optionalAttrs (search != null) {
-            SearchEngines = mkSearchPolicy search;
-          }
-          // lib.optionalAttrs (foxyproxy != null) {
-            "3rdparty".Extensions.${foxyproxyId} = mkFoxyProxy foxyproxy;
-          })
-          policies;
-        # Belt-and-suspenders lock (the authoritative fix is the user.js seed in
-        # the launcher; this only helps where autoconfig is honored).
-        extraPrefs =
-          settingsToPrefs (basePrefs // settings)
-          + "\n" + ''lockPref("zen.welcome-screen.seen", true);''
-          + "\n" + prefs;
+        extraPolicies = if isZen then { } else allPolicies;
+        extraPrefs = if isZen then "" else (settingsToPrefs allPrefs + "\n" + prefs);
       };
 
       # How to resolve the runtime profile directory at launch.
@@ -310,7 +328,6 @@ rec {
         '';
 
       # ---- essentials + pinned tabs (Zen only) ----------------------------
-      isZen = lib.isString browser && lib.elem browser zenBrowsers;
       pinsEnabled = pins != [ ] && isZen;
 
       # inject a stable id + order into each declared pin
@@ -341,7 +358,17 @@ rec {
         else "";
 
       pinsFilterFile = pkgs.writeText "zen-pins-merge-${name}.jq" ''
-        ($declaredPins[0]) as $pins
+        # A non-essential pinned tab only renders inside a workspace, and the
+        # workspace UUID is generated per-profile by Zen — so pins declared
+        # without an explicit `workspace` are attached here to the session's
+        # default (or first) space. Essentials span all workspaces, so they
+        # keep zenWorkspace = null.
+        (.spaces // []) as $spaces
+        | (($spaces | map(select(.default == true)) | .[0].uuid) // ($spaces[0].uuid // null)) as $defaultWs
+        | ($declaredPins[0] | map(
+            if (.zenEssential != true) and (.zenWorkspace == null)
+            then (.zenWorkspace = $defaultWs)
+            else . end)) as $pins
         | .tabs = (.tabs // [])
         | ([.tabs[].zenSyncId]) as $etIds
         | ([$pins[].zenSyncId]) as $dpIds
@@ -379,17 +406,18 @@ rec {
         fi
       '';
 
-      # Force Zen's first-run welcome ("a calmer internet") to be treated as
-      # already seen. A defaultPref/lockPref in mozilla.cfg is read back as
-      # false by Zen's startup check, so we pin it on the *user* branch via
-      # user.js — the same mechanism Zen's own test profiles use. Rewritten each
-      # launch (user.js is ours on a managed profile), applied at pref init
-      # before any chrome runs.
+      # Zen reads none of wrapFirefox's mozilla.cfg, so ALL prefs (container
+      # tabs, homepage, first-run/onboarding skip, default-browser check off,
+      # plus the user's `settings`) are delivered via the profile's user.js.
+      # It's applied at pref-init before any chrome runs, and rewritten each
+      # launch (user.js is ours on a managed profile).
+      zenUserJs = pkgs.writeText "multi-profile-user-${name}.js" (
+        "// Managed by multi-profile — regenerated on each launch, do not edit.\n"
+        + prefsToUserJs allPrefs
+        + "\n"
+      );
       seedUserJs = lib.optionalString isZen ''
-        {
-          echo "// Managed by multi-profile — regenerated on each launch, do not edit."
-          echo 'user_pref("zen.welcome-screen.seen", true);'
-        } > "$dir/user.js"
+        cp -f ${zenUserJs} "$dir/user.js"
       '';
 
       launcher = pkgs.writeShellApplication {

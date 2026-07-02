@@ -32,8 +32,11 @@ your Teams login) in a directory next to the direnv. So:
   special: it ships `zen.welcome-screen.seen=false` as an app default that a
   `mozilla.cfg` pref doesn't reliably override, so the launcher seeds it on the
   user branch via a managed `user.js` (the mechanism Zen's own tests use).
-- All of the above are applied by `wrapFirefox`, which works on both
-  `firefox-unwrapped` and Zen's `*-unwrapped` packages.
+- All of the above are applied by `wrapFirefox` **for Firefox**. **Zen** ignores
+  `wrapFirefox`'s `policies.json`/`mozilla.cfg` (it reads config from its own
+  packaged `distribution/`), so for Zen the policies are baked into the
+  `zen-browser-flake` package via its `policies` arg, and prefs are delivered
+  through a managed `user.js` in the profile. Same config, different plumbing.
 - The **launcher** runs `… --no-remote --profile $PWD/.browser-profiles/<name>`.
 
 Defaults extensions: **uBlock Origin, Bitwarden, FoxyProxy, Wappalyzer, DeArrow,
@@ -236,6 +239,9 @@ How it works and its limits:
 - Zen writes that sessions file on first run, so pins appear from the **second
   launch onward**. Changing `pins` is picked up on the next launch — no rebuild
   needed.
+- A non-essential **pinned tab** only renders inside a workspace, so pins
+  declared without an explicit `workspace` are attached to the profile's default
+  space automatically (essentials span all workspaces, so they need none).
 - The merge is skipped while that profile's browser is already open (the file is
   locked); just relaunch. If anything goes wrong the previous session is
   restored and the browser still starts.
