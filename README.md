@@ -25,8 +25,11 @@ your Teams login) in a directory next to the direnv. So:
   [`nur.repos.rycee.firefox-addons`](https://github.com/nix-community/nur).
 - **Bookmarks** use the `ManagedBookmarks` policy — a read-only folder that
   always reflects your config, including nested folders.
-- **Prefs** (container tabs, homepage, telemetry off, …) are baked into the
-  browser's `mozilla.cfg`.
+- **Prefs** (container tabs, homepage, telemetry off, first-run/onboarding
+  skipped, …) are baked into the browser's `mozilla.cfg`. A fresh profile opens
+  straight to your homepage — no Zen welcome screen or Firefox `about:welcome`,
+  no post-update page, no "make me default" nag (`zen.welcome-screen.seen`,
+  `browser.aboutwelcome.enabled`, and the `Override*Page` policies).
 - All of the above are applied by `wrapFirefox`, which works on both
   `firefox-unwrapped` and Zen's `*-unwrapped` packages.
 - The **launcher** runs `… --no-remote --profile $PWD/.browser-profiles/<name>`.

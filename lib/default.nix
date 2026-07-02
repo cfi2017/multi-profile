@@ -237,6 +237,15 @@ rec {
         "browser.shell.checkDefaultBrowser" = false;
         "datareporting.policy.dataSubmissionEnabled" = false;
         "extensions.autoDisableScopes" = 0;
+        # skip the first-run / onboarding flow on a fresh profile
+        "zen.welcome-screen.seen" = true; # Zen's setup screen (no-op on Firefox)
+        "browser.aboutwelcome.enabled" = false; # Firefox about:welcome
+        "browser.startup.homepage_override.mstone" = "ignore"; # no first-run/whatsnew page
+        "startup.homepage_welcome_url" = "";
+        "startup.homepage_welcome_url.additional" = "";
+        "browser.messaging-system.whatsNewPanel.enabled" = false;
+        "datareporting.policy.firstRunURL" = "";
+        "toolkit.telemetry.reportingpolicy.firstRun" = false;
       };
 
       wrapped = pkgs.wrapFirefox unwrapped {
@@ -247,6 +256,11 @@ rec {
           ({
             DisableAppUpdate = true;
             DisableTelemetry = true;
+            # skip first-run onboarding: no welcome page, no post-update page,
+            # no "make me default" nag.
+            OverrideFirstRunPage = "";
+            OverridePostUpdatePage = "";
+            DontCheckDefaultBrowser = true;
             ExtensionSettings = extensionSettings;
           }
           // lib.optionalAttrs (managedBookmarks != [ ]) {
