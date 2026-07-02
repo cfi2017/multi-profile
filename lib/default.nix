@@ -85,12 +85,17 @@ let
   # Recursively turn a friendly bookmark tree into the ManagedBookmarks shape.
   # Input node:  { name; url; }              -> a bookmark
   #              { name; children = [ ... ]; } -> a folder
-  toManaged = nodes:
+  # `ctx` is a human label (e.g. "profile 'acme'") used only in error messages.
+  toManaged = ctx: nodes:
     map
       (n:
-        if n ? children
-        then { inherit (n) name; children = toManaged n.children; }
-        else { inherit (n) name; url = n.url; })
+        if !(n ? name)
+        then throw "multi-profile: a bookmark node in ${ctx} is missing `name` (bookmarks use `name`, not `title` like pins/search): ${builtins.toJSON n}"
+        else if n ? children
+        then { inherit (n) name; children = toManaged ctx n.children; }
+        else if n ? url
+        then { inherit (n) name; url = n.url; }
+        else throw "multi-profile: bookmark '${n.name}' in ${ctx} needs either `url` (a bookmark) or `children` (a folder)")
       nodes;
 
   # attrset of about:config prefs -> mozilla.cfg lines
@@ -221,7 +226,7 @@ rec {
 
       managedBookmarks =
         lib.optionals (bookmarks != [ ])
-          ([{ toplevel_name = bookmarksFolderName; }] ++ toManaged bookmarks);
+          ([{ toplevel_name = bookmarksFolderName; }] ++ toManaged "profile '${name}'" bookmarks);
 
       basePrefs = {
         # container tabs (multi-account containers / "Open in container")

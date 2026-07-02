@@ -32,11 +32,22 @@ let
       or (throw "programs.multiProfile: unknown profile '${name}'"));
 
   # The URL router: extract the host and dispatch to the matching profile.
+  #
+  # Drop empty host patterns and rules with no hosts left — an empty pattern
+  # would emit an invalid `case` arm (`) exec … ;;`). Warn rather than silently
+  # ignore, so a mistyped rule (e.g. `hosts = [ ]`) is visible.
+  sanitizedRules =
+    map (r: r // { hosts = lib.filter (h: h != "") r.hosts; }) cfg.router.rules;
+  validRouterRules = lib.filter (r: r.hosts != [ ]) sanitizedRules;
+  emptyRuleProfiles = map (r: r.profile) (lib.filter (r: r.hosts == [ ]) sanitizedRules);
+
   routerRules = lib.concatMapStringsSep "\n"
     (r: "    ${lib.concatStringsSep "|" r.hosts}) exec ${launcherExe r.profile} \"$url\" ;;")
-    cfg.router.rules;
+    validRouterRules;
 
-  router = pkgs.writeShellApplication {
+  router = lib.warnIf (emptyRuleProfiles != [ ])
+    "programs.multiProfile.router.rules: ignoring rule(s) with no host patterns for profile(s): ${lib.concatStringsSep ", " emptyRuleProfiles}."
+    (pkgs.writeShellApplication {
     name = "browser-router";
     text = ''
       url="''${1:-about:blank}"
@@ -51,7 +62,7 @@ let
         *) exec ${launcherExe cfg.defaultProfile} "$url" ;;
       esac
     '';
-  };
+  });
 
   # one .desktop per profile, plus the router entry. `desktopName` /
   # `desktopGenericName` (per-profile keys) override the shown names.
