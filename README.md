@@ -162,9 +162,9 @@ Each profile value accepts:
 | `bookmarksFolderName`| profile name       | title of the managed bookmarks folder                              |
 | `search`             | `null`             | declarative search engines (see below)                              |
 | `foxyproxy`          | `null`             | FoxyProxy config as code (see below)                                |
-| `certificates`       | `[]`               | CA certs (PEM/DER) to trust in this profile (see below)             |
+| `certificates`       | `[]`               | CA certs (PEM/DER) to trust via `Certificates.Install` (see below)  |
 | `importEnterpriseRoots` | `false`         | also trust the OS / platform enterprise trust store                 |
-| `securityDevices`    | `{}`               | PKCS#11 modules to load, `{ label = "…/module.so"; }` (see below)   |
+| `securityDevices`    | `{}`               | PKCS#11 modules `{ label = "…/module.so"; }`, added at launch (see below) |
 | `pins`               | `[]`               | **Zen only** — essentials + pinned tabs as code (see below)         |
 | `pinsForce`          | `false`            | make declared `pins` the source of truth (demote/remove others)     |
 | `pinsForceAction`    | `"demote"`         | `"demote"` or `"remove"` undeclared pins when `pinsForce`           |
@@ -217,49 +217,63 @@ foxyproxy = {
 
 ### CA certificates & PKCS#11 security devices
 
-Both use Firefox [enterprise policies][pol], so they apply identically to
-Firefox **and Zen** — no manual import, no `certutil`/`modutil`, and the trust
-is scoped to that profile.
+Both work on Firefox **and Zen** and are scoped to that profile. They're
+delivered differently for a good reason (see the box below), but the config is
+uniform.
 
 **CA certificates.** `certificates` is a list of PEM or DER files trusted as
-roots in the profile. A local path is copied into the Nix store; a store path,
-derivation, or absolute string path is used as-is. Set `importEnterpriseRoots`
-to also trust the platform trust store (system NSS/p11-kit on Linux; the OS
-keychain on macOS/Windows):
+roots via the [`Certificates.Install`][cert] enterprise policy. A local path is
+copied into the store; a store path or derivation is copied into a
+*reference-free* store file (so a cert taken from a package can't drag that
+package's closure — see the box); a plain absolute string (a runtime system
+path) is referenced as-is. Set `importEnterpriseRoots` to also trust the
+platform trust store (system NSS/p11-kit on Linux; the OS keychain on
+macOS/Windows):
 
 ```nix
 certificates = [
-  ./corp-root.pem                       # copied into the store on eval
-  "/etc/ssl/certs/internal-ca.der"      # absolute path, referenced as-is
-  "${pkgs.cacert.unbundled}/etc/ssl/certs/…"  # from a package
+  ./corp-root.pem                             # copied into the store on eval
+  "/etc/ssl/certs/internal-ca.der"            # runtime system path, as-is
+  "${pkgs.cacert.unbundled}/etc/ssl/certs/…"  # copied out of the package
 ];
-importEnterpriseRoots = true;           # also trust the OS trust store
+importEnterpriseRoots = true;                 # also trust the OS trust store
 ```
 
-The certs are baked in at build time, so trust is reproducible and needs no
-first-run step. (Files are read from their absolute path at browser startup, so
-keep store paths — don't point at a `$HOME` file that may not exist.)
+Certs are baked in at build time, so trust is reproducible and needs no
+first-run step.
 
 **PKCS#11 security devices** (smartcards, YubiKeys, HSMs, soft-HSM). Give
 `securityDevices` an attrset of `label = path-to-module`; each is registered in
-the profile's NSS db at startup:
+the profile's NSS db **at launch** (via `modutil`, the same before-start hook as
+pins):
 
 ```nix
 securityDevices = {
   "OpenSC"    = "${pkgs.opensc}/lib/opensc-pkcs11.so";
   "YubiKey"   = "${pkgs.yubico-piv-tool}/lib/libykcs11.so";
-  # "SoftHSM" = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
+  # "SoftHSM" = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";  # needs SOFTHSM2_CONF
 };
 ```
 
-Add the module's package to your environment if it needs supporting binaries or
-a running daemon (e.g. `pcscd` for physical smartcards). The module `.so` is
-loaded from the path you give at launch, so a Nix store path is the safe choice.
+Registration is idempotent and re-applied every launch, so changing the set is
+picked up on the next start (no rebuild). If a module can't be loaded (missing
+supporting binaries or a daemon — e.g. `pcscd` for physical smartcards — or a
+module like SoftHSM that needs env config), a warning is logged and the browser
+still starts; add the module's package / daemon to your environment to fix it.
 
-Need something the friendly options don't cover? Anything under `policies` is
-recursively merged over these, so you can hand-write the raw
-[`Certificates`][cert] / [`SecurityDevices`][dev] policy (e.g. to `Delete` a
-device) and it wins.
+> **Why the split?** Both would naturally be Firefox [enterprise policies][pol].
+> But `wrapFirefox` forbids a compiler (`stdenv.cc`) anywhere in the wrapped
+> browser's closure (`disallowedRequisites`), and a policy's store paths become
+> part of that closure. A PKCS#11 module's runtime closure often pulls in a
+> compiler, which would fail the build — so devices are applied at launch
+> instead, keeping the module path in the *launcher's* closure, not the
+> browser's. Cert files are copied reference-free for the same safety, so they
+> can stay a policy.
+>
+> Need something the options don't cover? Anything under `policies` is
+> recursively merged on top, so you can hand-write the raw
+> [`Certificates`][cert] / [`SecurityDevices`][dev] policy and it wins (mind the
+> closure caveat for device paths).
 
 [pol]: https://mozilla.github.io/policy-templates/
 [cert]: https://mozilla.github.io/policy-templates/#certificates

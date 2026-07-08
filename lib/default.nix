@@ -208,8 +208,11 @@ rec {
       # PKCS#11 security devices (smartcards, HSMs, YubiKeys, soft-HSM …), as an
       # attrset of `<device label> = <path to the module .so/.dylib>`. e.g.
       #   { "OpenSC" = "${pkgs.opensc}/lib/opensc-pkcs11.so"; }
-      # Loaded via the `SecurityDevices` enterprise policy (registered in the
-      # profile's NSS db at startup, no `modutil` needed).
+      # Registered in the profile's NSS db at launch via `modutil` (NOT the
+      # enterprise policy): a module's runtime closure often pulls in a compiler,
+      # and wrapFirefox forbids `stdenv.cc` in the wrapped browser's closure
+      # (`disallowedRequisites`). Delivering at launch keeps the module path in
+      # the launcher's closure, not the browser's — see seedDevices.
     , securityDevices ? { }
       # Zen only: essentials + pinned tabs as code. Ordered list of
       #   { url; title ? url; essential ? false; container ? null;
@@ -252,10 +255,22 @@ rec {
         lib.optionals (bookmarks != [ ])
           ([{ toplevel_name = bookmarksFolderName; }] ++ toManaged "profile '${name}'" bookmarks);
 
-      # CA certs: each entry -> an absolute path string for Certificates.Install.
-      # `toString` a Nix path/derivation yields its store path (local files are
-      # copied into the store on eval); a plain string passes through unchanged.
-      certInstall = map toString certificates;
+      # CA certs -> absolute path strings for Certificates.Install.
+      #
+      # These end up embedded in policies.json, which becomes a *runtime
+      # reference* of the wrapped browser — and wrapFirefox bans `stdenv.cc`
+      # from that closure (disallowedRequisites). A bare cert file has no store
+      # references, but one taken from a package output might, so copy each
+      # store-backed cert into a reference-free store file (a plain `cp`, which
+      # also handles binary DER). Plain absolute strings (e.g. "/etc/ssl/…") are
+      # runtime system paths — not store refs — so pass them through untouched.
+      storifyCert = i: c:
+        if lib.isString c && !(lib.hasPrefix builtins.storeDir c)
+        then c
+        else pkgs.runCommand "multi-profile-cert-${name}-${toString i}" { } ''
+          cp ${c} "$out"
+        '';
+      certInstall = lib.imap0 (i: c: toString (storifyCert i c)) certificates;
 
       basePrefs = {
         # container tabs (multi-account containers / "Open in container")
@@ -301,9 +316,6 @@ rec {
           Certificates =
             lib.optionalAttrs importEnterpriseRoots { ImportEnterpriseRoots = true; }
             // lib.optionalAttrs (certInstall != [ ]) { Install = certInstall; };
-        }
-        // lib.optionalAttrs (securityDevices != { }) {
-          SecurityDevices.Add = lib.mapAttrs (_: m: toString m) securityDevices;
         })
         policies;
 
@@ -449,14 +461,37 @@ rec {
         cp -f ${zenUserJs} "$dir/user.js"
       '';
 
+      # ---- PKCS#11 security devices (Firefox + Zen) -----------------------
+      # Registered into the profile's NSS db (secmod.db/pkcs11.db) with modutil
+      # rather than via the enterprise policy, so the module's store path (and
+      # its compiler-tainted closure) stays out of the wrapped browser — see the
+      # `securityDevices` param note. Delete-then-add makes it declarative and
+      # idempotent (picks up a changed path); runs each launch, never fatal.
+      devicesEnabled = securityDevices != { };
+      seedDevices = lib.optionalString devicesEnabled ''
+        # skip while the profile is live (NSS db locked by the running browser)
+        if [ ! -e "$dir/.parentlock" ] && [ ! -e "$dir/lock" ]; then
+          # ensure an NSS db exists (fresh profile has none until first run)
+          [ -f "$dir/cert9.db" ] || certutil -d "sql:$dir" -N --empty-password >/dev/null 2>&1 || true
+          ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (label: mod: ''
+            modutil -dbdir "sql:$dir" -force -delete ${lib.escapeShellArg label} >/dev/null 2>&1 || true
+            modutil -dbdir "sql:$dir" -force -add ${lib.escapeShellArg label} -libfile ${lib.escapeShellArg (toString mod)} >/dev/null 2>&1 \
+              || echo "multi-profile: failed to register security device ${lib.escapeShellArg label}" >&2'')
+            securityDevices)}
+        fi
+      '';
+
       launcher = pkgs.writeShellApplication {
         name = "browser-${name}";
-        runtimeInputs = lib.optionals pinsEnabled [ pkgs.jq pkgs.mozlz4a ];
+        runtimeInputs =
+          lib.optionals pinsEnabled [ pkgs.jq pkgs.mozlz4a ]
+          ++ lib.optionals devicesEnabled [ pkgs.nss.tools ];
         text = ''
           ${resolveHome}
           dir="$profile_home/${profileDirName}"
           mkdir -p "$dir"
           ${seedUserJs}
+          ${seedDevices}
           ${applyPins}
           # --no-remote + a dedicated profile lets every customer browser run
           # concurrently, fully isolated from each other and your personal one.
