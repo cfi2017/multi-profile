@@ -162,6 +162,9 @@ Each profile value accepts:
 | `bookmarksFolderName`| profile name       | title of the managed bookmarks folder                              |
 | `search`             | `null`             | declarative search engines (see below)                              |
 | `foxyproxy`          | `null`             | FoxyProxy config as code (see below)                                |
+| `certificates`       | `[]`               | CA certs (PEM/DER) to trust in this profile (see below)             |
+| `importEnterpriseRoots` | `false`         | also trust the OS / platform enterprise trust store                 |
+| `securityDevices`    | `{}`               | PKCS#11 modules to load, `{ label = "…/module.so"; }` (see below)   |
 | `pins`               | `[]`               | **Zen only** — essentials + pinned tabs as code (see below)         |
 | `pinsForce`          | `false`            | make declared `pins` the source of truth (demote/remove others)     |
 | `pinsForceAction`    | `"demote"`         | `"demote"` or `"remove"` undeclared pins when `pinsForce`           |
@@ -211,6 +214,56 @@ foxyproxy = {
   # extra = { ... };                # merged onto the managed object verbatim
 };
 ```
+
+### CA certificates & PKCS#11 security devices
+
+Both use Firefox [enterprise policies][pol], so they apply identically to
+Firefox **and Zen** — no manual import, no `certutil`/`modutil`, and the trust
+is scoped to that profile.
+
+**CA certificates.** `certificates` is a list of PEM or DER files trusted as
+roots in the profile. A local path is copied into the Nix store; a store path,
+derivation, or absolute string path is used as-is. Set `importEnterpriseRoots`
+to also trust the platform trust store (system NSS/p11-kit on Linux; the OS
+keychain on macOS/Windows):
+
+```nix
+certificates = [
+  ./corp-root.pem                       # copied into the store on eval
+  "/etc/ssl/certs/internal-ca.der"      # absolute path, referenced as-is
+  "${pkgs.cacert.unbundled}/etc/ssl/certs/…"  # from a package
+];
+importEnterpriseRoots = true;           # also trust the OS trust store
+```
+
+The certs are baked in at build time, so trust is reproducible and needs no
+first-run step. (Files are read from their absolute path at browser startup, so
+keep store paths — don't point at a `$HOME` file that may not exist.)
+
+**PKCS#11 security devices** (smartcards, YubiKeys, HSMs, soft-HSM). Give
+`securityDevices` an attrset of `label = path-to-module`; each is registered in
+the profile's NSS db at startup:
+
+```nix
+securityDevices = {
+  "OpenSC"    = "${pkgs.opensc}/lib/opensc-pkcs11.so";
+  "YubiKey"   = "${pkgs.yubico-piv-tool}/lib/libykcs11.so";
+  # "SoftHSM" = "${pkgs.softhsm}/lib/softhsm/libsofthsm2.so";
+};
+```
+
+Add the module's package to your environment if it needs supporting binaries or
+a running daemon (e.g. `pcscd` for physical smartcards). The module `.so` is
+loaded from the path you give at launch, so a Nix store path is the safe choice.
+
+Need something the friendly options don't cover? Anything under `policies` is
+recursively merged over these, so you can hand-write the raw
+[`Certificates`][cert] / [`SecurityDevices`][dev] policy (e.g. to `Delete` a
+device) and it wins.
+
+[pol]: https://mozilla.github.io/policy-templates/
+[cert]: https://mozilla.github.io/policy-templates/#certificates
+[dev]: https://mozilla.github.io/policy-templates/#securitydevices
 
 ### Essentials & pinned tabs as code (Zen)
 

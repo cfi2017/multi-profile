@@ -195,6 +195,22 @@ rec {
     , search ? null
       # FoxyProxy config as code (see mkFoxyProxy)
     , foxyproxy ? null
+      # CA certificates to trust in this profile, as a list of PEM/DER files.
+      # A local path (e.g. ./corp-root.pem) is copied into the store; a store
+      # path, derivation, or absolute string path (e.g. "/etc/ssl/…") is used
+      # as-is. Rendered into the `Certificates.Install` enterprise policy, so
+      # the browser trusts them as roots without any manual import.
+    , certificates ? [ ]
+      # Also trust the OS / platform enterprise trust store
+      # (Certificates.ImportEnterpriseRoots): on Linux, certs from the system
+      # NSS/p11-kit trust; on macOS/Windows, the OS keychain/cert store.
+    , importEnterpriseRoots ? false
+      # PKCS#11 security devices (smartcards, HSMs, YubiKeys, soft-HSM …), as an
+      # attrset of `<device label> = <path to the module .so/.dylib>`. e.g.
+      #   { "OpenSC" = "${pkgs.opensc}/lib/opensc-pkcs11.so"; }
+      # Loaded via the `SecurityDevices` enterprise policy (registered in the
+      # profile's NSS db at startup, no `modutil` needed).
+    , securityDevices ? { }
       # Zen only: essentials + pinned tabs as code. Ordered list of
       #   { url; title ? url; essential ? false; container ? null;
       #     workspace ? null; id ? <derived>; }
@@ -236,6 +252,11 @@ rec {
         lib.optionals (bookmarks != [ ])
           ([{ toplevel_name = bookmarksFolderName; }] ++ toManaged "profile '${name}'" bookmarks);
 
+      # CA certs: each entry -> an absolute path string for Certificates.Install.
+      # `toString` a Nix path/derivation yields its store path (local files are
+      # copied into the store on eval); a plain string passes through unchanged.
+      certInstall = map toString certificates;
+
       basePrefs = {
         # container tabs (multi-account containers / "Open in container")
         "privacy.userContext.enabled" = true;
@@ -275,6 +296,14 @@ rec {
         }
         // lib.optionalAttrs (foxyproxy != null) {
           "3rdparty".Extensions.${foxyproxyId} = mkFoxyProxy foxyproxy;
+        }
+        // lib.optionalAttrs (importEnterpriseRoots || certInstall != [ ]) {
+          Certificates =
+            lib.optionalAttrs importEnterpriseRoots { ImportEnterpriseRoots = true; }
+            // lib.optionalAttrs (certInstall != [ ]) { Install = certInstall; };
+        }
+        // lib.optionalAttrs (securityDevices != { }) {
+          SecurityDevices.Add = lib.mapAttrs (_: m: toString m) securityDevices;
         })
         policies;
 
