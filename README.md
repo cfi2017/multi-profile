@@ -26,7 +26,9 @@ your Teams login) in a directory next to the direnv. So:
 - **Bookmarks** use the `ManagedBookmarks` policy — a read-only folder that
   always reflects your config, including nested folders.
 - **Prefs** (container tabs, homepage, telemetry off, first-run/onboarding
-  skipped, …) are baked into the browser's `mozilla.cfg`. A fresh profile opens
+  skipped, built-in password/address/credit-card saving off — a dedicated
+  password manager like the bundled Bitwarden owns that — …) are baked into the
+  browser's `mozilla.cfg`. A fresh profile opens
   straight to your homepage — no Firefox `about:welcome`, no post-update page,
   no "make me default" nag. Zen's own welcome screen ("a calmer internet") is
   special: it ships `zen.welcome-screen.seen=false` as an app default that a

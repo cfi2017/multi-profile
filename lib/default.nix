@@ -289,6 +289,14 @@ rec {
         # container tabs (multi-account containers / "Open in container")
         "privacy.userContext.enabled" = true;
         "privacy.userContext.ui.enabled" = true;
+        # Don't offer to save or autofill logins, addresses or payment cards —
+        # a dedicated password manager (the bundled Bitwarden) owns credentials.
+        # Override per profile via `settings` if a profile really wants these.
+        "signon.rememberSignons" = false; # no "save password?" prompt
+        "signon.autofillForms" = false; # don't autofill saved logins
+        "extensions.formautofill.enabled" = false; # form autofill subsystem off
+        "extensions.formautofill.addresses.enabled" = false; # no address autofill
+        "extensions.formautofill.creditCards.enabled" = false; # no payment cards
         # keep startup quiet & predictable
         "browser.aboutConfig.showWarning" = false;
         "browser.shell.checkDefaultBrowser" = false;
