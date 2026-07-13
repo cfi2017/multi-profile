@@ -340,6 +340,12 @@ rec {
         lib.optionalAttrs transparency {
           "zen.widget.linux.transparency" = true; # Linux: transparent chrome
           "zen.theme.acrylic-elements" = true; # Windows/macOS: acrylic blur
+          # Under Wayland, Firefox/Zen declares its window opaque to the
+          # compositor (a perf hint), so nothing behind it is ever blended —
+          # transparency silently does nothing even on compositors that DO
+          # composite alpha (niri, Hyprland, sway). Disable that hint so the
+          # transparent chrome actually shows through.
+          "widget.wayland.opaque-region.enabled" = false;
         }
         // lib.optionalAttrs transparentContent {
           "browser.tabs.allow_transparent_browser" = true; # transparent web content

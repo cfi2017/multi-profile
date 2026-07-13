@@ -195,10 +195,19 @@ transparentContent = true;        # transparent web page backgrounds too
 accentColor        = "#8ab4f8";   # tint the UI with a per-customer color
 ```
 
-- `transparency` sets `zen.widget.linux.transparency` (Linux) and
-  `zen.theme.acrylic-elements` (Windows/macOS acrylic blur). On Linux you need a
-  compositor that does window blur — **KDE** (optionally with
-  `kwin-effects-forceblur`) or **Hyprland**; GNOME has no proper support.
+- `transparency` sets `zen.widget.linux.transparency` (Linux),
+  `zen.theme.acrylic-elements` (Windows/macOS acrylic blur), and
+  `widget.wayland.opaque-region.enabled = false`. That last one matters: under
+  Wayland, Firefox/Zen declares its window opaque to the compositor, so the
+  transparent chrome never shows through until it's disabled (this is why a
+  transparent kitty works but Zen didn't). Any Wayland compositor that
+  composites alpha then shows it through — **niri**, **Hyprland**, **sway**,
+  **KDE**. For an actual *blur* behind the window you need a compositor that
+  supports it (KDE with `kwin-effects-forceblur`, Hyprland's blur); niri/sway
+  give plain see-through with no blur. GNOME has no proper support. Firefox/Zen
+  must be running in **native Wayland mode** (recent Firefox auto-detects it
+  when `WAYLAND_DISPLAY` is set; if yours falls back to XWayland, launch with
+  `MOZ_ENABLE_WAYLAND=1`).
 - `transparentContent` sets `browser.tabs.allow_transparent_browser`, tinting
   web page backgrounds with your theme color so the blur shows through the page
   too. Off by default — it can break sites that assume an opaque background.
