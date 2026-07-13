@@ -134,6 +134,9 @@
         # a Zen demo showing essentials + pinned tabs as code
         profiles.zen-demo = {
           browser = "zen";
+          transparency = true; # transparent UI (needs a blur-capable compositor)
+          transparentContent = true; # transparent web page backgrounds too
+          accentColor = "#8ab4f8"; # tint the UI so this browser is recognisable
           pins = [
             { url = "https://teams.microsoft.com"; title = "Teams"; essential = true; }
             { url = "https://outlook.office.com"; title = "Outlook"; essential = true; }

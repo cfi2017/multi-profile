@@ -103,9 +103,9 @@ let
     lib.concatStringsSep "\n"
       (lib.mapAttrsToList (k: v: ''defaultPref("${k}", ${builtins.toJSON v});'') s);
 
-  # attrset of about:config prefs -> user.js lines (Zen). Zen ignores the
-  # wrapFirefox mozilla.cfg entirely (it reads config from the unwrapped
-  # package's own dir), so prefs must be delivered via the profile's user.js.
+  # attrset of about:config prefs -> user.js lines (Zen). Zen doesn't reliably
+  # honour wrapFirefox's mozilla.cfg for app-default overrides (e.g. the welcome
+  # screen), so prefs are delivered via the profile's user.js instead.
   prefsToUserJs = s:
     lib.concatStringsSep "\n"
       (lib.mapAttrsToList (k: v: ''user_pref("${k}", ${builtins.toJSON v});'') s);
@@ -191,6 +191,19 @@ rec {
     , bookmarksFolderName ? name
       # extra about:config prefs (attrset, json-serialisable values)
     , settings ? { }
+      # Zen only: make the browser UI transparent. On Linux this needs a
+      # blur-capable compositor (KDE/Hyprland; GNOME has no proper support);
+      # on Windows/macOS it enables the acrylic blur behind UI elements.
+    , transparency ? false
+      # Zen only: also make web *content* transparent — page backgrounds are
+      # tinted with the theme color so the compositor blur shows through the
+      # page too. Off by default because it can break sites that assume an
+      # opaque background.
+    , transparentContent ? false
+      # Zen only: UI accent color as a hex string (e.g. "#8ab4f8"). Handy for
+      # telling customer browsers apart at a glance. Re-applied every launch,
+      # so it survives Zen's occasional accent-color reset on startup.
+    , accentColor ? null
       # declarative search engines (see mkSearchPolicy)
     , search ? null
       # FoxyProxy config as code (see mkFoxyProxy)
@@ -319,27 +332,42 @@ rec {
         })
         policies;
 
-      allPrefs = basePrefs // settings;
+      # Zen appearance prefs derived from the friendly `transparency` /
+      # `accentColor` options. Delivered like any other pref (user.js on Zen,
+      # mozilla.cfg on Firefox, where they're harmless no-ops). The user's
+      # explicit `settings` still win over these.
+      themePrefs =
+        lib.optionalAttrs transparency {
+          "zen.widget.linux.transparency" = true; # Linux: transparent chrome
+          "zen.theme.acrylic-elements" = true; # Windows/macOS: acrylic blur
+        }
+        // lib.optionalAttrs transparentContent {
+          "browser.tabs.allow_transparent_browser" = true; # transparent web content
+        }
+        // lib.optionalAttrs (accentColor != null) {
+          "zen.theme.accent-color" = accentColor;
+        };
 
-      # Zen and Firefox need config delivered differently.
-      #
-      # Firefox: wrapFirefox's policies.json + mozilla.cfg are read normally.
-      #
-      # Zen: the zen-browser-flake package ships its OWN distribution/ and the
-      # browser reads config relative to that (the unwrapped binary), so
-      # wrapFirefox's policies.json and mozilla.cfg are IGNORED. Instead bake
-      # policies into the unwrapped package via its `policies` arg, and deliver
-      # prefs through the profile's user.js (see seedUserJs).
-      unwrapped =
-        if isZen
-        then unwrappedBase.override { policies = allPolicies; }
-        else unwrappedBase;
+      allPrefs = basePrefs // themePrefs // settings;
 
-      wrapped = pkgs.wrapFirefox unwrapped {
+      # Policies go through wrapFirefox's `extraPolicies` for BOTH browsers.
+      #
+      # wrapFirefox regenerates the browser's `lib/<app>/distribution/` dir and
+      # writes a fresh policies.json there from `extraPolicies` — and *that* is
+      # the file the running browser reads, even for Zen (whose unwrapped
+      # package ships its own distribution/). Baking policies into the unwrapped
+      # package via its `policies` arg is therefore shadowed by wrapFirefox and
+      # has NO effect once wrapped, which silently dropped bookmarks,
+      # extensions, search and foxyproxy on Zen. So deliver them here.
+      #
+      # Prefs still differ: Firefox reads wrapFirefox's mozilla.cfg; Zen doesn't
+      # reliably honour it for app-default overrides (e.g. the welcome screen),
+      # so Zen prefs are delivered through the profile's user.js (see seedUserJs).
+      wrapped = pkgs.wrapFirefox unwrappedBase {
         # distinct window class per profile (handy for tiling WMs / identifying
         # which customer a window belongs to)
         wmClass = "browser-${name}";
-        extraPolicies = if isZen then { } else allPolicies;
+        extraPolicies = allPolicies;
         extraPrefs = if isZen then "" else (settingsToPrefs allPrefs + "\n" + prefs);
       };
 
@@ -424,26 +452,37 @@ rec {
         | .tabs = (.tabs | sort_by(.index // 0))
       '';
 
-      # Runs before exec (Zen closed for this profile). Zen writes the sessions
-      # file on first run, so pins land from the *second* launch onward; the
-      # merge is idempotent and preserves the rest of the session. Never blocks
-      # the browser from starting.
+      # Runs before exec (Zen closed for this profile). On a fresh profile Zen
+      # hasn't written the sessions file yet, so we SEED a minimal valid one and
+      # merge into it — that way declared essentials/pins show from the FIRST
+      # launch instead of the second. The merge is idempotent and preserves the
+      # rest of the session; it never blocks the browser from starting.
       applyPins = lib.optionalString pinsEnabled ''
         sessions="$dir/zen-sessions.jsonlz4"
-        # skip while this profile is live (file is locked in memory)
-        if [ -f "$sessions" ] && [ ! -e "$dir/.parentlock" ] && [ ! -e "$dir/lock" ]; then
-          _in="$(mktemp)"; _out="$(mktemp)"
-          cp -f "$sessions" "$sessions.bak" || true
-          if mozlz4a -d "$sessions" "$_in" \
-            && jq --slurpfile declaredPins ${pinsJsonFile} -f ${pinsFilterFile} "$_in" > "$_out" \
-            && [ -s "$_out" ] \
-            && mozlz4a "$_out" "$sessions"; then
-            rm -f "$sessions.bak"
-          else
-            echo "multi-profile: failed to apply pins, restoring session" >&2
-            [ -f "$sessions.bak" ] && mv -f "$sessions.bak" "$sessions"
+        # only touch the session while this profile is closed (Zen holds the
+        # file in memory and rewrites it on exit while it's live).
+        if [ ! -e "$dir/.parentlock" ] && [ ! -e "$dir/lock" ]; then
+          if [ ! -f "$sessions" ]; then
+            # seed an empty-but-valid session so the merge has something to
+            # write essentials/pins into on a brand-new profile.
+            printf '%s' '{"spaces":[],"tabs":[],"folders":[],"groups":[]}' > "$dir/.zen-seed.json"
+            mozlz4a "$dir/.zen-seed.json" "$sessions" || true
+            rm -f "$dir/.zen-seed.json"
           fi
-          rm -f "$_in" "$_out"
+          if [ -f "$sessions" ]; then
+            _in="$(mktemp)"; _out="$(mktemp)"
+            cp -f "$sessions" "$sessions.bak" || true
+            if mozlz4a -d "$sessions" "$_in" \
+              && jq --slurpfile declaredPins ${pinsJsonFile} -f ${pinsFilterFile} "$_in" > "$_out" \
+              && [ -s "$_out" ] \
+              && mozlz4a "$_out" "$sessions"; then
+              rm -f "$sessions.bak"
+            else
+              echo "multi-profile: failed to apply pins, restoring session" >&2
+              [ -f "$sessions.bak" ] && mv -f "$sessions.bak" "$sessions"
+            fi
+            rm -f "$_in" "$_out"
+          fi
         fi
       '';
 

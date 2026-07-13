@@ -32,11 +32,15 @@ your Teams login) in a directory next to the direnv. So:
   special: it ships `zen.welcome-screen.seen=false` as an app default that a
   `mozilla.cfg` pref doesn't reliably override, so the launcher seeds it on the
   user branch via a managed `user.js` (the mechanism Zen's own tests use).
-- All of the above are applied by `wrapFirefox` **for Firefox**. **Zen** ignores
-  `wrapFirefox`'s `policies.json`/`mozilla.cfg` (it reads config from its own
-  packaged `distribution/`), so for Zen the policies are baked into the
-  `zen-browser-flake` package via its `policies` arg, and prefs are delivered
-  through a managed `user.js` in the profile. Same config, different plumbing.
+- Policies (extensions, bookmarks, search, foxyproxy, certs) are applied via
+  `wrapFirefox`'s `extraPolicies` for **both** Firefox and Zen: `wrapFirefox`
+  regenerates the browser's `distribution/policies.json`, and that copy is the
+  one the running browser reads — even for Zen, whose unwrapped package ships
+  its own `distribution/`. (Baking policies into the Zen package via its
+  `policies` arg looks right but is silently shadowed by `wrapFirefox`.) Prefs
+  differ: Firefox reads `wrapFirefox`'s `mozilla.cfg`, while Zen doesn't
+  reliably honour it for app-default overrides (e.g. the welcome screen), so
+  Zen prefs are delivered through a managed `user.js` in the profile.
 - The **launcher** runs `… --no-remote --profile $PWD/.browser-profiles/<name>`.
 
 Defaults extensions: **uBlock Origin, Bitwarden, FoxyProxy, Wappalyzer, DeArrow,
@@ -160,6 +164,9 @@ Each profile value accepts:
 | `extraExtensions`    | `[]`               | extra addon derivations to add                                      |
 | `bookmarks`          | `[]`               | tree of `{name;url;}` / `{name;children=[…];}`                      |
 | `bookmarksFolderName`| profile name       | title of the managed bookmarks folder                              |
+| `transparency`       | `false`            | **Zen only** — transparent UI (Linux needs a blur-capable compositor) |
+| `transparentContent` | `false`            | **Zen only** — also make web page backgrounds transparent            |
+| `accentColor`        | `null`             | **Zen only** — UI accent as a hex string, e.g. `"#8ab4f8"`           |
 | `search`             | `null`             | declarative search engines (see below)                              |
 | `foxyproxy`          | `null`             | FoxyProxy config as code (see below)                                |
 | `certificates`       | `[]`               | CA certs (PEM/DER) to trust via `Certificates.Install` (see below)  |
@@ -176,6 +183,31 @@ Each profile value accepts:
 | `icon`               | —                  | desktop-entry icon (home-manager module)                            |
 | `desktopName`        | `Browser — <name>` | desktop-entry app name (home-manager module)                        |
 | `desktopGenericName` | `Web Browser (<name>)` | desktop-entry generic name (home-manager module)                |
+
+### Appearance: transparency & accent color (Zen)
+
+Two friendly options make a profile visually distinct — handy when several
+customer browsers are open at once:
+
+```nix
+transparency       = true;        # transparent browser UI
+transparentContent = true;        # transparent web page backgrounds too
+accentColor        = "#8ab4f8";   # tint the UI with a per-customer color
+```
+
+- `transparency` sets `zen.widget.linux.transparency` (Linux) and
+  `zen.theme.acrylic-elements` (Windows/macOS acrylic blur). On Linux you need a
+  compositor that does window blur — **KDE** (optionally with
+  `kwin-effects-forceblur`) or **Hyprland**; GNOME has no proper support.
+- `transparentContent` sets `browser.tabs.allow_transparent_browser`, tinting
+  web page backgrounds with your theme color so the blur shows through the page
+  too. Off by default — it can break sites that assume an opaque background.
+- `accentColor` sets `zen.theme.accent-color` (any hex string). It's re-written
+  to `user.js` on every launch, so it survives Zen's occasional
+  reset-accent-on-startup behaviour.
+
+Both are Zen-only; on Firefox they're harmless no-op prefs. They're just
+shortcuts — anything you'd rather set by hand still works through `settings`.
 
 ### Declarative search engines
 
@@ -303,9 +335,9 @@ How it works and its limits:
   starting Zen** (decompress → `jq` merge → recompress), so it works the same in
   a direnv or via a desktop entry. The merge only touches pinned/essential tabs
   and leaves the rest of your session intact.
-- Zen writes that sessions file on first run, so pins appear from the **second
-  launch onward**. Changing `pins` is picked up on the next launch — no rebuild
-  needed.
+- On a brand-new profile the launcher **seeds** a minimal sessions file if Zen
+  hasn't written one yet, so pins/essentials appear from the **first launch**.
+  Changing `pins` is picked up on the next launch — no rebuild needed.
 - A non-essential **pinned tab** only renders inside a workspace, so pins
   declared without an explicit `workspace` are attached to the profile's default
   space automatically (essentials span all workspaces, so they need none).
