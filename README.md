@@ -346,9 +346,12 @@ How it works and its limits:
   starting Zen** (decompress → `jq` merge → recompress), so it works the same in
   a direnv or via a desktop entry. The merge only touches pinned/essential tabs
   and leaves the rest of your session intact.
-- On a brand-new profile the launcher **seeds** a minimal sessions file if Zen
-  hasn't written one yet, so pins/essentials appear from the **first launch**.
-  Changing `pins` is picked up on the next launch — no rebuild needed.
+- On a brand-new profile Zen must first create its real workspace/session
+  metadata. Close the first launch normally; declared pins are merged before
+  the second launch. Synthesizing an empty session is intentionally avoided
+  because current Zen versions replace incomplete session structures.
+- After rebuilding a changed profile, the updated pins are applied on its next
+  launch.
 - A non-essential **pinned tab** only renders inside a workspace, so pins
   declared without an explicit `workspace` are attached to the profile's default
   space automatically (essentials span all workspaces, so they need none).

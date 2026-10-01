@@ -364,24 +364,23 @@ rec {
 
       allPrefs = basePrefs // themePrefs // settings;
 
-      # Policies go through wrapFirefox's `extraPolicies` for BOTH browsers.
-      #
-      # wrapFirefox regenerates the browser's `lib/<app>/distribution/` dir and
-      # writes a fresh policies.json there from `extraPolicies` — and *that* is
-      # the file the running browser reads, even for Zen (whose unwrapped
-      # package ships its own distribution/). Baking policies into the unwrapped
-      # package via its `policies` arg is therefore shadowed by wrapFirefox and
-      # has NO effect once wrapped, which silently dropped bookmarks,
-      # extensions, search and foxyproxy on Zen. So deliver them here.
-      #
-      # Prefs still differ: Firefox reads wrapFirefox's mozilla.cfg; Zen doesn't
-      # reliably honour it for app-default overrides (e.g. the welcome screen),
-      # so Zen prefs are delivered through the profile's user.js (see seedUserJs).
-      wrapped = pkgs.wrapFirefox unwrappedBase {
+      # Current Zen resolves its real executable through the wrapper and reads
+      # policies.json next to that executable in the *unwrapped* derivation.
+      # A policies file emitted by wrapFirefox is therefore ignored by Zen.
+      # Firefox still consumes wrapFirefox's extraPolicies normally.
+      policyBase =
+        if isZen then
+          unwrappedBase.override { policies = allPolicies; }
+        else
+          unwrappedBase;
+
+      # Prefs still differ: Firefox reads wrapFirefox's mozilla.cfg; Zen prefs
+      # are delivered through the profile's user.js (see seedUserJs).
+      wrapped = pkgs.wrapFirefox policyBase {
         # distinct window class per profile (handy for tiling WMs / identifying
         # which customer a window belongs to)
         wmClass = "browser-${name}";
-        extraPolicies = allPolicies;
+        extraPolicies = if isZen then { } else allPolicies;
         extraPrefs = if isZen then "" else (settingsToPrefs allPrefs + "\n" + prefs);
       };
 
@@ -466,24 +465,17 @@ rec {
         | .tabs = (.tabs | sort_by(.index // 0))
       '';
 
-      # Runs before exec (Zen closed for this profile). On a fresh profile Zen
-      # hasn't written the sessions file yet, so we SEED a minimal valid one and
-      # merge into it — that way declared essentials/pins show from the FIRST
-      # launch instead of the second. The merge is idempotent and preserves the
-      # rest of the session; it never blocks the browser from starting.
+      # Runs before exec while Zen is closed. Do not synthesize a first-run
+      # session: recent Zen versions require real workspace/session metadata
+      # and replace an incomplete seeded file. Zen creates the file on first
+      # exit; the next launch applies the declared pins.
       applyPins = lib.optionalString pinsEnabled ''
         sessions="$dir/zen-sessions.jsonlz4"
-        # only touch the session while this profile is closed (Zen holds the
-        # file in memory and rewrites it on exit while it's live).
-        if [ ! -e "$dir/.parentlock" ] && [ ! -e "$dir/lock" ]; then
-          if [ ! -f "$sessions" ]; then
-            # seed an empty-but-valid session so the merge has something to
-            # write essentials/pins into on a brand-new profile.
-            printf '%s' '{"spaces":[],"tabs":[],"folders":[],"groups":[]}' > "$dir/.zen-seed.json"
-            mozlz4a "$dir/.zen-seed.json" "$sessions" || true
-            rm -f "$dir/.zen-seed.json"
-          fi
-          if [ -f "$sessions" ]; then
+        if [ ! -f "$sessions" ]; then
+          echo "multi-profile: Zen will create its session on first exit; declared pins apply on the next launch" >&2
+        # Test whether the lock is actually held instead of treating a stale
+        # lock path as a running browser.
+        elif ! lsof "$dir/.parentlock" >/dev/null 2>&1 && ! lsof "$dir/lock" >/dev/null 2>&1; then
             _in="$(mktemp)"; _out="$(mktemp)"
             cp -f "$sessions" "$sessions.bak" || true
             if mozlz4a -d "$sessions" "$_in" \
@@ -496,7 +488,8 @@ rec {
               [ -f "$sessions.bak" ] && mv -f "$sessions.bak" "$sessions"
             fi
             rm -f "$_in" "$_out"
-          fi
+        else
+          echo "multi-profile: Zen is running; skipping declared pin update" >&2
         fi
       '';
 
@@ -537,7 +530,7 @@ rec {
       launcher = pkgs.writeShellApplication {
         name = "browser-${name}";
         runtimeInputs =
-          lib.optionals pinsEnabled [ pkgs.jq pkgs.mozlz4a ]
+          lib.optionals pinsEnabled [ pkgs.jq pkgs.lsof pkgs.mozlz4a ]
           ++ lib.optionals devicesEnabled [ pkgs.nss.tools ];
         text = ''
           ${resolveHome}
